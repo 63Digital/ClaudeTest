@@ -1,26 +1,55 @@
-# YARP Proxy Service
+# YARP Proxy Service with Hybrid Browser Rendering
 
-A reverse proxy service built with YARP (Yet Another Reverse Proxy) that routes traffic through an external proxy provider to access location-blocked websites, with comprehensive URL rewriting capabilities.
+A scalable reverse proxy service built with YARP (Yet Another Reverse Proxy) that intelligently routes traffic through an external proxy provider to access location-blocked websites. Features both fast URL rewriting for simple content and headless browser rendering for complex JavaScript applications.
 
 ## Features
 
+### Core Features
 - **Reverse Proxy**: Built on Microsoft's YARP framework for high-performance proxying
 - **External Proxy Support**: Route traffic through HTTP/HTTPS proxy servers
+- **Hybrid Routing**: Intelligent routing between fast path (URL rewriting) and browser path (headless Chrome)
+- **Browser Pool**: Managed pool of headless Chrome instances for JavaScript-heavy sites
 - **URL Rewriting**: Automatically rewrites URLs in responses to maintain proxy transparency
 - **Content Type Handling**: Smart rewriting for HTML, CSS, JavaScript, and JSON content
 - **Redirect Handling**: Properly rewrites Location headers for 301/302/307/308 redirects
+- **Session Management**: Browser instance reuse for better performance
 - **Configurable**: Easy configuration via `appsettings.json`
 - **Authentication**: Supports proxy authentication with username/password
 - **Logging**: Comprehensive logging for debugging and monitoring
 
+### Hybrid Architecture
+
+The service supports two rendering paths:
+
+**Fast Path (YARP URL Rewriting)**
+- For static content and simple HTML pages
+- Very low latency (<100ms overhead)
+- Handles: CSS, JS, images, simple server-rendered pages
+- Scales to thousands of concurrent users
+
+**Browser Path (Headless Chrome)**
+- For complex JavaScript applications (React, Vue, Angular)
+- Perfect rendering accuracy
+- Handles: SPAs, dynamic content, AJAX-heavy sites
+- Managed browser instance pool
+
 ## Architecture
 
 ```
-Client Request → YARP Server → External Proxy → Blocked Website
-                     ↓
-              URL Rewriting
-                     ↓
-Client Response ← Modified Content
+                    Client Request
+                         ↓
+              Intelligent Router
+                    ↓         ↓
+         Fast Path          Browser Path
+         (YARP Rewriting)   (Puppeteer)
+              ↓                  ↓
+         External Proxy ← → Browser Pool
+              ↓                  ↓
+         Blocked Website   Blocked Website
+              ↓                  ↓
+         URL Rewriting     Rendered Content
+              ↓                  ↓
+              Client Response
 ```
 
 ## Prerequisites
@@ -94,9 +123,51 @@ Edit `appsettings.json` to configure the proxy service:
       "text/javascript",
       "application/json"
     ]
+  },
+  "Scaling": {
+    "FastPath": {
+      "Enabled": true
+    },
+    "BrowserPath": {
+      "Enabled": true
+    }
+  },
+  "BrowserPool": {
+    "MinSize": 2,
+    "MaxSize": 10
   }
 }
 ```
+
+### Browser Path Configuration
+
+To enable headless browser rendering for JavaScript-heavy sites:
+
+```json
+{
+  "Scaling": {
+    "BrowserPath": {
+      "Enabled": true  // Enable headless browser path
+    }
+  },
+  "BrowserPool": {
+    "MinSize": 2,      // Minimum browsers to keep ready
+    "MaxSize": 10      // Maximum concurrent browsers
+  }
+}
+```
+
+**When to enable Browser Path:**
+- Target website is a Single Page Application (React, Vue, Angular)
+- Content is heavily JavaScript-dependent
+- Fast path (URL rewriting) doesn't work properly
+- You need perfect rendering accuracy
+
+**Performance Considerations:**
+- Each browser instance uses ~200MB RAM
+- Browser path has higher latency (~2s vs ~100ms)
+- Pool automatically manages browser lifecycle
+- Browsers are reused across sessions for efficiency
 
 ### Configuration Options
 
@@ -143,6 +214,30 @@ http://localhost:5000/
 ```
 
 All requests will be routed through your configured proxy to the destination website.
+
+### Understanding Routing Decisions
+
+The service automatically decides whether to use fast path or browser path based on:
+
+**Fast Path is used for:**
+- Static files (.css, .js, .jpg, .png, etc.)
+- Simple HTML pages
+- API endpoints
+- When browser pool is at capacity (fallback)
+
+**Browser Path is used for:**
+- SPA routes (/, /app, /dashboard, /admin)
+- Requests with framework indicators (?react, ?vue, ?angular)
+- Paths without file extensions at shallow depth
+
+You can check which path was used by looking at response headers:
+```bash
+curl -I http://localhost:5000/
+
+HTTP/1.1 200 OK
+X-Proxy-Path: fast
+X-Proxy-Reason: Static content - using fast path
+```
 
 ### Multiple Destinations
 
@@ -195,31 +290,58 @@ YarpProxyService/
 │   ├── ProxyHttpClientFactory.cs          # HTTP client with proxy support
 │   └── Configuration/
 │       └── ProxySettings.cs               # Proxy configuration model
-└── Transforms/
-    ├── ResponseRewriteTransform.cs        # URL rewriting logic
-    └── ResponseRewriteTransformProvider.cs # Transform registration
+├── Transforms/
+│   ├── ResponseRewriteTransform.cs        # URL rewriting logic
+│   └── ResponseRewriteTransformProvider.cs # Transform registration
+├── BrowserPool/
+│   ├── BrowserInstance.cs                 # Browser instance model
+│   ├── BrowserPoolManager.cs              # Browser pool manager
+│   └── BrowserFetchService.cs             # Browser fetch service
+├── Routing/
+│   ├── RouteDecision.cs                   # Route decision model
+│   └── IntelligentRequestRouter.cs        # Fast/browser path router
+└── Middleware/
+    └── HybridRoutingMiddleware.cs         # Routing middleware
 ```
 
 ## How It Works
 
-### 1. Request Flow
+### 1. Request Flow (Hybrid Routing)
 
 1. Client sends a request to the YARP service (e.g., `http://localhost:5000/page`)
-2. YARP receives the request and applies request transforms (sets X-Forwarded headers)
-3. The custom `ProxyHttpClientFactory` creates an HTTP client configured to use the external proxy
-4. The request is forwarded through the external proxy to the destination website
-5. The destination website responds
+2. `HybridRoutingMiddleware` intercepts the request
+3. `IntelligentRequestRouter` analyzes the request and decides routing path:
+   - **Fast Path**: For static files, simple HTML, API endpoints
+   - **Browser Path**: For SPAs, JavaScript-heavy pages
 
-### 2. Response Flow
+**Fast Path Flow:**
+4a. YARP applies request transforms (sets X-Forwarded headers)
+5a. `ProxyHttpClientFactory` creates HTTP client configured with external proxy
+6a. Request is forwarded through external proxy to destination
+7a. `ResponseRewriteTransform` rewrites URLs in the response
+8a. Modified response sent to client
 
-1. YARP receives the response from the destination
-2. The `ResponseRewriteTransform` intercepts the response
-3. If the content type is rewritable (HTML, CSS, JS, etc.):
-   - The response body is read into memory
-   - URLs pointing to the destination are rewritten to point to the YARP service
-   - The modified content is sent to the client
-4. Location headers in redirects are also rewritten
-5. The client receives the modified response
+**Browser Path Flow:**
+4b. Session ID is retrieved or created
+5b. Browser instance is acquired from the pool (or created if needed)
+6b. Puppeteer navigates to the URL through configured proxy
+7b. Page waits for network idle and JavaScript execution
+8b. Rendered HTML is captured
+9b. URLs are rewritten in the rendered content
+10b. Modified content sent to client
+11b. Browser instance returned to pool for reuse
+
+### 2. Browser Pool Management
+
+The `BrowserPoolManager` maintains a pool of headless Chrome instances:
+
+- **Initialization**: Creates minimum number of browsers on startup
+- **Acquisition**: Assigns browsers to sessions (reuses if session exists)
+- **Release**: Returns browsers to pool after cleaning state
+- **Maintenance**: Every 2 minutes:
+  - Cleans up idle sessions (>15 minutes)
+  - Removes unhealthy browsers
+  - Maintains minimum pool size
 
 ### 3. URL Rewriting
 
@@ -228,6 +350,8 @@ The service rewrites URLs in the following patterns:
 - **Absolute URLs**: `https://destination.com/path` → `http://localhost:5000/path`
 - **Protocol-relative URLs**: `//destination.com/path` → `//localhost:5000/path`
 - **Location Headers**: Redirects are rewritten to keep the client proxied
+
+This works in both fast path (transform-based) and browser path (regex-based).
 
 ## Troubleshooting
 
@@ -267,6 +391,41 @@ The service rewrites URLs in the following patterns:
 **Solution**:
 - Verify the username and password are correct
 - Check that the credentials are properly configured
+
+#### 5. Browser Pool Exhausted
+
+**Error**: `Browser pool at capacity. Try again later.`
+
+**Solution**:
+- Increase `BrowserPool:MaxSize` in configuration
+- Check if browsers are being released properly (check logs)
+- Reduce idle timeout for unused sessions
+- Consider disabling browser path for some routes
+
+#### 6. Chromium Download Failed
+
+**Error**: `Failed to download Chromium`
+
+**Solution**:
+- Ensure internet connectivity
+- Check firewall/proxy settings
+- PuppeteerSharp will auto-download Chromium on first run
+- You may need to run `dotnet run` twice the first time
+
+#### 7. Browser Crashes or Becomes Unhealthy
+
+**Problem**: Browsers keep crashing or becoming unhealthy
+
+**Solution**:
+- Check available system memory (each browser uses ~200MB)
+- Reduce `BrowserPool:MaxSize`
+- Check logs for specific error messages
+- Ensure Chrome dependencies are installed (Linux):
+  ```bash
+  apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxrandr2 libgbm1 libasound2
+  ```
 
 ### Debug Mode
 
