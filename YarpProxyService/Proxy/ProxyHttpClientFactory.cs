@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using Yarp.ReverseProxy.Forwarder;
 using YarpProxyService.Proxy.Configuration;
