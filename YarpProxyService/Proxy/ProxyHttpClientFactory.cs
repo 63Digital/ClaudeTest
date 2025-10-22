@@ -124,8 +124,13 @@ internal class ReverseProxyPropagator : DistributedContextPropagator
         _inner.Inject(activity, carrier, setter);
     }
 
-    public override void Extract(object? carrier, PropagatorGetterCallback? getter, out string? traceParent, out string? traceState)
+    public override void ExtractTraceIdAndState(object? carrier, PropagatorGetterCallback? getter, out string? traceParent, out string? traceState)
     {
-        _inner.Extract(carrier, getter, out traceParent, out traceState);
+        _inner.ExtractTraceIdAndState(carrier, getter, out traceParent, out traceState);
+    }
+
+    public override IEnumerable<KeyValuePair<string, string?>>? ExtractBaggage(object? carrier, PropagatorGetterCallback? getter)
+    {
+        return _inner.ExtractBaggage(carrier, getter);
     }
 }
