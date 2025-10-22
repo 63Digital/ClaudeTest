@@ -25,8 +25,8 @@ public class BrowserInstance : IDisposable
             // Clear browser state
             if (Page != null && !Page.IsClosed)
             {
-                // Clear storage
-                var client = await Page.Target.CreateCDPSessionAsync();
+                // Clear storage using CDP
+                var client = await Page.CreateCDPSessionAsync();
                 await client.SendAsync("Network.clearBrowserCookies");
                 await client.SendAsync("Network.clearBrowserCache");
 

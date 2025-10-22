@@ -56,7 +56,7 @@ public class BrowserFetchService
             var content = await browser.Page.GetContentAsync();
 
             // Get response status and headers
-            var statusCode = response.Status;
+            var statusCode = (int)response.Status;
             var headers = response.Headers;
 
             _logger.LogInformation(

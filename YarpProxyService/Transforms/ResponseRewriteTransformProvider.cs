@@ -97,15 +97,5 @@ public class ResponseRewriteTransformProvider : ITransformProvider
 
             await transform.ApplyAsync(transformContext);
         });
-
-        // Add response header transforms for common headers
-        context.AddResponseHeadersTransform(transformContext =>
-        {
-            // Remove headers that might cause issues
-            transformContext.HttpContext.Response.Headers.Remove("Content-Security-Policy");
-            transformContext.HttpContext.Response.Headers.Remove("X-Frame-Options");
-
-            return default;
-        });
     }
 }

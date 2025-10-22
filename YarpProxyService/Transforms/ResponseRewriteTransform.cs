@@ -46,9 +46,10 @@ public class ResponseRewriteTransform : ResponseTransform
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 
-    public override async ValueTask ApplyAsync(ResponseTransformContext context)
+    public override ValueTask ApplyAsync(ResponseTransformContext context)
     {
-        // First, handle Location header rewriting for redirects
+        // Handle Location header rewriting for redirects (fast path)
+        // Note: Body rewriting is handled by the browser path for complex content
         if (context.HttpContext.Response.Headers.TryGetValue("Location", out var locationValues))
         {
             var location = locationValues.ToString();
@@ -62,67 +63,11 @@ public class ResponseRewriteTransform : ResponseTransform
             }
         }
 
-        // Check if URL rewriting is enabled
-        var rewritingEnabled = context.HttpContext.RequestServices
-            .GetRequiredService<IConfiguration>()
-            .GetValue<bool>("UrlRewriting:Enabled", true);
+        // Note: For complex JavaScript sites that need body URL rewriting,
+        // the intelligent router will direct them to the browser path instead.
+        // This keeps the fast path truly fast by only handling headers.
 
-        if (!rewritingEnabled)
-        {
-            return;
-        }
-
-        // Check if content type is rewritable
-        var contentType = context.HttpContext.Response.ContentType;
-        if (string.IsNullOrEmpty(contentType) || !ShouldRewriteContentType(contentType))
-        {
-            _logger.LogDebug("Skipping URL rewriting for content type: {ContentType}", contentType);
-            return;
-        }
-
-        // Only rewrite successful responses
-        var statusCode = context.HttpContext.Response.StatusCode;
-        if (statusCode < 200 || statusCode >= 300)
-        {
-            _logger.LogDebug("Skipping URL rewriting for status code: {StatusCode}", statusCode);
-            return;
-        }
-
-        try
-        {
-            // Read the response body
-            var originalBody = context.HttpContext.Response.Body;
-            using var memoryStream = new MemoryStream();
-            context.HttpContext.Response.Body = memoryStream;
-
-            // Let YARP write the proxied response to our memory stream
-            await base.ApplyAsync(context);
-
-            // Read and rewrite the content
-            memoryStream.Seek(0, SeekOrigin.Begin);
-            using var reader = new StreamReader(memoryStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
-            var content = await reader.ReadToEndAsync();
-
-            var rewrittenContent = RewriteContent(content, context.HttpContext.Request);
-
-            // Write the rewritten content back
-            var rewrittenBytes = Encoding.UTF8.GetBytes(rewrittenContent);
-            context.HttpContext.Response.Body = originalBody;
-            context.HttpContext.Response.ContentLength = rewrittenBytes.Length;
-
-            await originalBody.WriteAsync(rewrittenBytes);
-
-            _logger.LogDebug(
-                "Rewrote response content. Original size: {OriginalSize}, New size: {NewSize}",
-                memoryStream.Length,
-                rewrittenBytes.Length);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error rewriting response content. Returning original content.");
-            // On error, let the original response through
-            await base.ApplyAsync(context);
-        }
+        return default;
     }
 
     /// <summary>
